@@ -1,0 +1,171 @@
+if(CMAKE_TOOLCHAIN_FILE)
+set(LIBRARY_OUTPUT_PATH_ROOT ${CMAKE_BINARY_DIR} CACHE PATH "root for library output, set this to change where android libs are compiled to")
+# get absolute path, but get_filename_component ABSOLUTE only refer with source dir, so find_file here :(
+get_filename_component(CMAKE_TOOLCHAIN_FILE_NAME ${CMAKE_TOOLCHAIN_FILE} NAME)
+find_file(CMAKE_TOOLCHAIN_FILE ${CMAKE_TOOLCHAIN_FILE_NAME} PATHS ${CMAKE_SOURCE_DIR} NO_DEFAULT_PATH)
+message(STATUS "CMAKE_TOOLCHAIN_FILE = ${CMAKE_TOOLCHAIN_FILE}")
+endif()
+
+if(NOT DEFINED CMAKE_INSTALL_PREFIX)
+set(CMAKE_INSTALL_PREFIX "${CMAKE_CURRENT_SOURCE_DIR}/install" CACHE PATH "Installation Directory")
+endif()
+message(STATUS "CMAKE_INSTALL_PREFIX = ${CMAKE_INSTALL_PREFIX}")
+
+
+cmake_minimum_required(VERSION 3.6)
+
+set(CMAKE_BUILD_TYPE debug)
+# set(CMAKE_BUILD_TYPE relwithdebinfo)
+# set(CMAKE_BUILD_TYPE release)
+
+
+project(tengine_android)
+
+option(CONFIG_ARCH_ARM64 "build arm64 version" OFF)
+option(CONFIG_ARCH_BLAS  "build blas  version" OFF)
+option(CONFIG_ACL_GPU  "build acl gpu  version" OFF)
+option(CONFIG_CAFFE_SERIALIZER "caffe serializer" ON)
+option(CONFIG_ONNX_SERIALIZER "onnx serializer" ON)
+option(CONFIG_TF_SERIALIZER "tensorflow serializer" ON)
+option(CONFIG_TENGINE_SERIALIZER "tengine serializer" ON)
+
+#message("list dir ${CMAKE_CURRENT_LIST_DIR}/.git")
+if(EXISTS ${CMAKE_CURRENT_LIST_DIR}/.git)
+    execute_process(COMMAND git -C ${CMAKE_CURRENT_LIST_DIR} rev-parse HEAD
+                    OUTPUT_VARIABLE git_commit_id)
+    STRING(STRIP ${git_commit_id} stripped_commit_id)
+else()
+    set(stripped_commit_id "UNKNOWN")
+endif()
+
+set(GIT_COMMIT_ID -DGIT_COMMIT_ID="0x${stripped_commit_id}")
+
+message("GIT COMMIT ID: " 0x${stripped_commit_id})
+
+if (CONFIG_ARCH_ARM64)
+   add_definitions(-DCONFIG_ARCH_ARM64=1)
+endif()
+
+if(CONFIG_ARCH_BLAS)
+   add_definitions(-DCONFIG_ARCH_BLAS=1)
+endif()
+
+if(CONFIG_ACL_GPU)
+   add_definitions(-DCONFIG_ACL_GPU=1)
+endif()
+
+if(CONFIG_CAFFE_SERIALIZER)
+   add_definitions(-DCONFIG_CAFFE_SERIALIZER=1)
+endif()
+
+if(CONFIG_ONNX_SERIALIZER)
+   add_definitions(-DCONFIG_ONNX_SERIALIZER=1)
+endif()
+
+if(CONFIG_TF_SERIALIZER)
+   add_definitions(-DCONFIG_TF_SERIALIZER=1)
+endif()
+
+if(CONFIG_TENGINE_SERIALIZER)
+   add_definitions(-DCONFIG_TENGINE_SERIALIZER=1)
+endif()
+
+add_definitions(${GIT_COMMIT_ID})
+add_definitions(-Wno-unused-command-line-argument)
+add_definitions(-Wall)
+#add_definitions(-Werror)
+add_definitions(-fPIC)
+add_definitions(-g)
+add_definitions(-O3)
+add_definitions(-funroll-loops)
+add_definitions(-Wno-deprecated-register)
+add_definitions(-Wno-overloaded-virtual)
+
+set(CMAKE_CXX_STANDARD 11)
+set(CXX_STANDARD_REQUIRED ON)
+#set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-overloaded-virtual")
+
+include_directories(include)
+
+include(cmake/core.cmake)
+include(cmake/operator.cmake)
+include(cmake/serializer.cmake)
+include(cmake/executor.cmake)
+include(cmake/driver.cmake)
+
+set(can_use_assembler TRUE)
+enable_language(ASM-ATT)
+
+
+#add_subdirectory(signature)
+
+
+FOREACH(src ${TENGINE_LIB_SRCS} ${TENGINE_SIGN_SRCS} )
+#if the file does not exist it is a generated file
+
+if( NOT EXISTS ${src} )
+# message ( ${src} " is a generated file" )
+#   SET_SOURCE_FILES_PROPERTIES ( ${src} PROPERTIES  GENERATED  1)
+#   set_property(SOURCE ${src} PROPERTY LANGUAGE C)
+endif()
+
+ENDFOREACH()
+
+if(PROTOBUF_DIR)
+    include_directories(${PROTOBUF_DIR}/include)
+    LINK_DIRECTORIES(${PROTOBUF_DIR}/lib) 
+    LINK_LIBRARIES(protobuf)
+else()
+    message(FATAL_ERROR "need to set the protobuf path")
+endif()
+if(ANDROID)
+ADD_LIBRARY(tengine STATIC ${TENGINE_LIB_SRCS} ${TENGINE_SIGN_SRCS})
+else()
+ADD_LIBRARY(tengine SHARED ${TENGINE_LIB_SRCS} ${TENGINE_SIGN_SRCS})
+endif()
+
+ADD_DEPENDENCIES(tengine KERNEL_ASM_TARGET)
+
+if(CONFIG_CAFFE_SERIALIZER)
+    ADD_DEPENDENCIES(tengine CAFFE_SERIALIZER_TARGET)
+endif()
+
+if(CONFIG_ONNX_SERIALIZER)
+    ADD_DEPENDENCIES(tengine ONNX_SERIALIZER_TARGET)
+endif()
+
+if(CONFIG_TF_SERIALIZER)
+    ADD_DEPENDENCIES(tengine TF_SERIALIZER_TARGET)
+endif()
+
+#Add OpenBLAS
+if(CONFIG_ARCH_BLAS)
+   if( BLAS_DIR)
+      TARGET_LINK_LIBRARIES(tengine ${BLAS_DIR}/lib/libopenblas.so)
+   else()
+      message(FATAL_ERROR "need to set the blas path")
+   endif()
+   include_directories(${BLAS_DIR}/include/openblas)
+   include_directories(${BLAS_DIR}/include/)
+endif()
+
+#Add ACL
+if(CONFIG_ACL_GPU)
+   if(ACL_ROOT)
+        include_directories(${ACL_ROOT})
+        include_directories(${ACL_ROOT}/include)
+        TARGET_LINK_LIBRARIES(tengine ${ACL_ROOT}/lib/libarm_compute_core.so ${ACL_ROOT}/lib/libarm_compute.so)
+   else() 
+         message(FATAL_ERROR "need to set the ACL path")
+   endif()
+endif()
+
+#add_subdirectory(wrapper)
+#add_subdirectory(examples/mtcnn)
+
+install (TARGETS tengine  DESTINATION lib)
+install (FILES ${CMAKE_CURRENT_SOURCE_DIR}/core/include/tengine_c_api.h DESTINATION include)
+install (FILES ${CMAKE_CURRENT_SOURCE_DIR}/core/include/cpu_device.h DESTINATION include)
+install (FILES ${CMAKE_CURRENT_SOURCE_DIR}/core/include/tengine_test_api.h DESTINATION include)
+install (FILES ${CMAKE_CURRENT_SOURCE_DIR}/core/include/tengine_c_compat.h DESTINATION include)
+
